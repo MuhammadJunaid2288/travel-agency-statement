@@ -10,6 +10,8 @@ from datetime import datetime, date
 from pathlib import Path
 import tempfile
 import os
+import urllib.request
+from io import BytesIO
 
 # Optional: PDF & Excel
 try:
@@ -17,11 +19,12 @@ try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image as RLImage
     from reportlab.lib.enums import TA_CENTER
     REPORTLAB_OK = True
 except ImportError:
     REPORTLAB_OK = False
+    RLImage = None
 
 try:
     from openpyxl import Workbook
@@ -409,6 +412,47 @@ def generate_pdf(agent_id, path):
 
     elements.append(Spacer(1, 12))
     elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor('#cbd5e0')))
+    elements.append(Spacer(1, 6))
+
+    # QR Code on statement
+    qr_text = (
+        f"Statement: {agent['statement_no']}\n"
+        f"Agent: {agent['agent_name']}\n"
+        f"Outstanding: Rs. {summary['outstanding']:,.0f}\n"
+        f"Date: {agent['statement_date']}"
+    )
+    try:
+        import urllib.parse
+        qr_url = (
+            "https://api.qrserver.com/v1/create-qr-code/"
+            f"?size=120x120&margin=8&data={urllib.parse.quote(qr_text)}"
+        )
+        with urllib.request.urlopen(qr_url, timeout=10) as resp:
+            qr_data = resp.read()
+        qr_img = RLImage(BytesIO(qr_data), width=28*mm, height=28*mm)
+        qr_label = Paragraph(
+            f"<b>Scan QR for Statement Info</b><br/>"
+            f"No: {agent['statement_no']}<br/>"
+            f"Outstanding: Rs. {summary['outstanding']:,.0f}",
+            ParagraphStyle('qr', fontSize=7, alignment=TA_CENTER, textColor=colors.HexColor('#4a5568'))
+        )
+        qr_table = Table([[qr_img], [qr_label]], colWidths=[40*mm])
+        qr_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ]))
+        wrap = Table([[qr_table]], colWidths=[180*mm])
+        wrap.setStyle(TableStyle([('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
+        elements.append(wrap)
+    except Exception:
+        elements.append(Paragraph(
+            f"[QR: {agent['statement_no']} | Outstanding Rs. {summary['outstanding']:,.0f}]",
+            ParagraphStyle('qrfail', fontSize=7, alignment=TA_CENTER, textColor=colors.HexColor('#a0aec0'))
+        ))
+
+    elements.append(Spacer(1, 6))
     elements.append(Paragraph(
         f"Generated: {datetime.now().strftime('%d-%b-%Y %H:%M')}  |  Statement: {agent['statement_no']}  |  Computer generated",
         ParagraphStyle('f', fontSize=7, alignment=TA_CENTER, textColor=colors.HexColor('#718096'), spaceBefore=3)))

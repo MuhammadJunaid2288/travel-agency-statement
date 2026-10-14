@@ -25,3 +25,8 @@ Browser automatically open hoga (http://localhost:8501)
 3. App deploy karein — free public URL mil jayegi
 
 Ya Render.com / Railway pe bhi host kar sakte hain.
+
+## QR Code
+PDF statement ke neeche QR code automatically generate hota hai.
+Scan karne pe Statement No, Agent Name aur Outstanding Balance dikhta hai.
+
