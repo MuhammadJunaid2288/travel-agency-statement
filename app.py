@@ -273,7 +273,7 @@ def clear_agent_data(agent_id):
     conn.close()
 
 # ==================== PDF ====================
-def generate_pdf(agent_id, path):
+def generate_pdf(agent_id, path, base_url=""):
     agent = get_agent(agent_id)
     summary = get_summary(agent_id)
     ledger = get_ledger(agent_id)
@@ -414,29 +414,30 @@ def generate_pdf(agent_id, path):
     elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor('#cbd5e0')))
     elements.append(Spacer(1, 6))
 
-    # QR Code on statement
-    qr_text = (
-        f"Statement: {agent['statement_no']}\n"
-        f"Agent: {agent['agent_name']}\n"
-        f"Outstanding: Rs. {summary['outstanding']:,.0f}\n"
-        f"Date: {agent['statement_date']}"
-    )
+    # QR Code — opens full statement in browser when scanned
+    if base_url:
+        statement_link = f"{base_url.rstrip('/')}?view=statement&agent_id={agent_id}"
+    else:
+        statement_link = (
+            f"Statement: {agent['statement_no']} | "
+            f"Agent: {agent['agent_name']} | "
+            f"Outstanding: Rs. {summary['outstanding']:,.0f}"
+        )
     try:
         import urllib.parse
-        qr_url = (
+        qr_api = (
             "https://api.qrserver.com/v1/create-qr-code/"
-            f"?size=120x120&margin=8&data={urllib.parse.quote(qr_text)}"
+            f"?size=140x140&margin=6&data={urllib.parse.quote(statement_link)}"
         )
-        with urllib.request.urlopen(qr_url, timeout=10) as resp:
+        with urllib.request.urlopen(qr_api, timeout=10) as resp:
             qr_data = resp.read()
-        qr_img = RLImage(BytesIO(qr_data), width=28*mm, height=28*mm)
+        qr_img = RLImage(BytesIO(qr_data), width=30*mm, height=30*mm)
         qr_label = Paragraph(
-            f"<b>Scan QR for Statement Info</b><br/>"
-            f"No: {agent['statement_no']}<br/>"
-            f"Outstanding: Rs. {summary['outstanding']:,.0f}",
+            f"<b>Scan to open full statement online</b><br/>"
+            f"{agent['statement_no']} | Outstanding: Rs. {summary['outstanding']:,.0f}",
             ParagraphStyle('qr', fontSize=7, alignment=TA_CENTER, textColor=colors.HexColor('#4a5568'))
         )
-        qr_table = Table([[qr_img], [qr_label]], colWidths=[40*mm])
+        qr_table = Table([[qr_img], [qr_label]], colWidths=[45*mm])
         qr_table.setStyle(TableStyle([
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -448,7 +449,7 @@ def generate_pdf(agent_id, path):
         elements.append(wrap)
     except Exception:
         elements.append(Paragraph(
-            f"[QR: {agent['statement_no']} | Outstanding Rs. {summary['outstanding']:,.0f}]",
+            f"[Scan QR / Open: {statement_link[:80]}]",
             ParagraphStyle('qrfail', fontSize=7, alignment=TA_CENTER, textColor=colors.HexColor('#a0aec0'))
         ))
 
@@ -477,6 +478,93 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 init_db()
+
+# ========== PUBLIC STATEMENT VIEW (QR scan opens this) ==========
+# URL example: https://your-app.streamlit.app/?view=statement&agent_id=1
+qp = st.query_params
+if qp.get("view") == "statement":
+    try:
+        pub_agent_id = int(qp.get("agent_id", 0))
+    except (TypeError, ValueError):
+        pub_agent_id = 0
+    pub_agent = get_agent(pub_agent_id) if pub_agent_id else None
+    if not pub_agent:
+        st.error("Statement not found. Invalid or missing agent.")
+        st.stop()
+
+    pub_summary = get_summary(pub_agent_id)
+    pub_ledger = get_ledger(pub_agent_id)
+    pub_payments = get_payments(pub_agent_id)
+
+    st.markdown("""
+    <style>
+        [data-testid="stSidebar"] { display: none; }
+        #MainMenu, footer { visibility: hidden; }
+        .stmt-title { font-size: 1.5rem; font-weight: 700; color: #1a365d; text-align: center; }
+        .stmt-sub { color: #718096; text-align: center; margin-bottom: 1rem; }
+        @media print {
+            .no-print { display: none !important; }
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f'<p class="stmt-title">TRAVEL AGENCY — SUB-AGENT ACCOUNT STATEMENT</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="stmt-sub">{pub_agent["agent_name"]} | {pub_agent["agency_city"]} | {pub_agent["statement_no"]}</p>', unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Gross Booking", f"Rs. {pub_summary['gross']:,.0f}")
+    c2.metric("Payments", f"Rs. {pub_summary['payments']:,.0f}")
+    c3.metric("Outstanding", f"Rs. {pub_summary['outstanding']:,.0f}")
+    c4.metric("Statement Date", pub_agent["statement_date"] or "—")
+
+    st.subheader("Agent Information")
+    st.write(f"**Name:** {pub_agent['agent_name']}  \n**Agency:** {pub_agent['agency_city']}  \n**Phone:** {pub_agent['contact_phone']}  \n**Statement No:** {pub_agent['statement_no']}")
+
+    st.subheader("Summary by Service")
+    import pandas as pd
+    st.dataframe(pd.DataFrame([
+        {"Category": "Airline Tickets", "Count": pub_summary["tickets_count"], "Amount (PKR)": pub_summary["tickets_amount"]},
+        {"Category": "Umrah / Packages", "Count": pub_summary["packages_count"], "Amount (PKR)": pub_summary["packages_amount"]},
+        {"Category": "Hotel & Visa", "Count": pub_summary["visa_count"], "Amount (PKR)": pub_summary["visa_amount"]},
+        {"Category": "TOTAL", "Count": pub_summary["tickets_count"]+pub_summary["packages_count"]+pub_summary["visa_count"], "Amount (PKR)": pub_summary["gross"]},
+    ]), use_container_width=True, hide_index=True)
+
+    st.subheader("Tickets & Packages Ledger")
+    if pub_ledger:
+        df = pd.DataFrame([dict(r) for r in pub_ledger])
+        st.dataframe(df[["date","pnr_ref","category","passenger_name","sector_desc","qty","unit_price","total_amount","payment_status"]],
+                     use_container_width=True, hide_index=True)
+    else:
+        st.info("No bookings.")
+
+    st.subheader("Payments Received")
+    if pub_payments:
+        dfp = pd.DataFrame([dict(r) for r in pub_payments])
+        st.dataframe(dfp[["payment_date","receipt_ref","payment_mode","bank_details","amount","remarks"]],
+                     use_container_width=True, hide_index=True)
+    else:
+        st.info("No payments.")
+
+    st.markdown(f"### NET OUTSTANDING BALANCE: **Rs. {pub_summary['outstanding']:,.0f}**")
+    st.caption(f"Generated online | {datetime.now().strftime('%d-%b-%Y %H:%M')}")
+
+    st.markdown('<div class="no-print">', unsafe_allow_html=True)
+    if st.button("🖨️ Print this page"):
+        st.info("Browser ka Print use karein: Ctrl+P (Windows) ya Cmd+P (Mac)")
+    if REPORTLAB_OK:
+        base_url = get_setting("app_public_url", "") or ""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            generate_pdf(pub_agent_id, tmp.name, base_url=base_url)
+            with open(tmp.name, "rb") as f:
+                st.download_button("📄 Download PDF", f.read(),
+                                   file_name=f"Statement_{pub_agent['statement_no']}.pdf",
+                                   mime="application/pdf")
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.stop()  # Do not show normal app UI
 
 # Session state
 if "current_agent_id" not in st.session_state:
@@ -567,7 +655,8 @@ if page == "📊 Dashboard":
         if REPORTLAB_OK:
             if st.button("📄 Download PDF Statement", use_container_width=True):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    generate_pdf(st.session_state.current_agent_id, tmp.name)
+                    base_url = get_setting("app_public_url", "") or ""
+                    generate_pdf(st.session_state.current_agent_id, tmp.name, base_url=base_url)
                     with open(tmp.name, "rb") as f:
                         st.download_button("⬇️ Click to Download PDF", f.read(),
                                            file_name=f"Statement_{agent['statement_no']}.pdf",
@@ -722,6 +811,21 @@ elif page == "⚙️ Agent Settings":
     st.markdown('<p class="main-header">Agent Settings</p>', unsafe_allow_html=True)
     st.divider()
 
+    # App Public URL (required for QR to open statement online)
+    st.subheader("🔗 App Public URL (QR Code ke liye zaroori)")
+    st.caption("Streamlit Cloud pe deploy ke baad jo link milta hai woh yahan paste karein. Example: https://travel-agency-statement.streamlit.app")
+    current_url = get_setting("app_public_url", "") or ""
+    new_url = st.text_input("Public App URL", value=current_url, placeholder="https://your-app.streamlit.app")
+    if st.button("💾 Save App URL"):
+        set_setting("app_public_url", new_url.strip().rstrip("/"))
+        st.success("App URL saved! Ab PDF ka QR scan karne pe statement open hogi.")
+        st.rerun()
+    if current_url:
+        st.info(f"Current URL: {current_url}")
+    else:
+        st.warning("Pehle App URL save karein — warna QR mein sirf text hoga, link nahi.")
+
+    st.divider()
     tab1, tab2 = st.tabs(["Edit Current Agent", "Add New Agent"])
 
     with tab1:
